@@ -1,0 +1,91 @@
+@import url('https://fonts.googleapis.com/css2?family=ZCOOL+KuaiLe&family=Nunito:wght@400;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Nunito', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #FFF8E7;
+  color: #3d3d3d;
+  overflow-x: hidden;
+}
+
+@layer utilities {
+  .text-gradient {
+    background: linear-gradient(135deg, #FF6B6B 0%, #C4A8FF 50%, #7EC8A4 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .bg-stars {
+    background-image:
+      radial-gradient(2px 2px at 20px 30px, rgba(255,255,255,0.8), transparent),
+      radial-gradient(2px 2px at 40px 70px, rgba(255,255,255,0.6), transparent),
+      radial-gradient(1px 1px at 90px 40px, rgba(255,255,255,0.9), transparent),
+      radial-gradient(2px 2px at 130px 80px, rgba(255,255,255,0.5), transparent),
+      radial-gradient(1px 1px at 160px 20px, rgba(255,255,255,0.7), transparent),
+      radial-gradient(2px 2px at 200px 60px, rgba(255,255,255,0.6), transparent),
+      radial-gradient(1px 1px at 250px 30px, rgba(255,255,255,0.8), transparent),
+      radial-gradient(2px 2px at 300px 90px, rgba(255,255,255,0.5), transparent);
+    background-size: 320px 100px;
+    animation: twinkle-bg 8s ease-in-out infinite alternate;
+  }
+
+  .book-shadow {
+    box-shadow:
+      0 10px 30px rgba(0, 0, 0, 0.1),
+      0 5px 15px rgba(0, 0, 0, 0.05),
+      inset -2px 0 5px rgba(0, 0, 0, 0.02);
+  }
+
+  .card-hover {
+    transition: all 0.3s ease;
+  }
+
+  .card-hover:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.12);
+  }
+}
+
+@keyframes twinkle-bg {
+  0% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
+input:focus, textarea:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.2);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #FFF8E7;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #FFD1DC;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #FF6B6B;
+}
