@@ -1,9 +1,27 @@
+/**
+ * ============================================================================
+ * 涂色页面 (Coloring Page)
+ * ============================================================================
+ *
+ * 功能说明：
+ * - 展示线稿涂色页，支持自由画笔涂色和区域泛洪填充
+ * - 双层Canvas架构：底层为涂色层（用户绘制），顶层为线稿层（固定轮廓）
+ * - 线稿层使用 mixBlendMode: multiply 叠加，保证黑色线条始终可见
+ * - 支持撤销/重做、橡皮擦、调色板、画笔大小调节、保存/下载作品
+ *
+ * 涂色区域保证与原页面一模一样的原理：
+ * - 线稿层(lineArtCanvas)精确绘制从原图提取的轮廓线，构成封闭涂色区域
+ * - 泛洪填充(floodFill)以线稿层的深色像素为边界，不会越出轮廓
+ * - 画笔层(canvas)在下层，颜色被线稿层的黑色线条覆盖而不影响轮廓
+ */
+
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Palette, Undo2, Redo2, Trash2, Save, ChevronLeft, ChevronRight, Eye, EyeOff, Download, X, Check, Eraser, Minus, Plus } from "lucide-react";
 import { useStore } from "@/store/useStore";
 import type { ColoringArtwork } from "@/store/useStore";
 
+/** 调色板颜色配置：每行4组渐变色，共9行36色 */
 const colorPalette = [
   "#FF6B6B", "#FF8E8E", "#FFB4B4", "#FFD4D4",
   "#FF9F43", "#FFB975", "#FFD3A7", "#FFEDD9",
@@ -16,14 +34,34 @@ const colorPalette = [
   "#FFFFFF", "#F8F9FA", "#E9ECEF", "#DEE2E6",
 ];
 
+/** 画笔尺寸选项（像素直径） */
 const brushSizes = [4, 8, 12, 16, 24, 32, 48];
+
+/** 画布固定尺寸 - 与插画/线稿生成尺寸一致 */
+const CANVAS_WIDTH = 800;
+const CANVAS_HEIGHT = 600;
+
+/**
+ * 判断像素是否为线稿边界像素
+ * 线稿为白底(255)黑线(0)，考虑到SVG渲染的半透明描边和抗锯齿像素，
+ * 阈值设为200：只要任一通道小于200即认为是线条（边界），有效防止flood fill泄漏
+ */
+const LINE_PIXEL_THRESHOLD = 200;
+
+/** 颜色匹配容差：判断两个颜色是否"相同"（用于flood fill的目标色匹配） */
+const COLOR_MATCH_TOLERANCE = 15;
 
 export default function Coloring() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { storyBook, addColoringArtwork, resetAll } = useStore();
+
+  /** 涂色层Canvas引用（用户绘制颜色的层） */
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  /** 线稿层Canvas引用（固定黑色轮廓，叠加在涂色层之上） */
   const lineArtCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  /** 当前页码 */
   const [currentPage, setCurrentPage] = useState(() => {
     const page = searchParams.get("page");
     return page ? parseInt(page, 10) : 0;
@@ -38,12 +76,17 @@ export default function Coloring() {
   const [isEraser, setIsEraser] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
+  /** 过滤掉封底页，只保留封面和故事页用于涂色 */
   const storyPages = storyBook?.pages.filter(p => p.pageType !== "back") || [];
   const page = storyPages[currentPage];
   const totalPages = storyPages.length;
   const isFirstPage = currentPage === 0;
   const isLastPage = currentPage === totalPages - 1;
 
+  /**
+   * 初始化双Canvas：设置尺寸、白底、加载线稿
+   * 每次切换页面时重新初始化
+   */
   const initCanvas = useCallback(() => {
     if (!canvasRef.current || !lineArtCanvasRef.current || !page) return;
 
@@ -53,40 +96,42 @@ export default function Coloring() {
     const lineArtCtx = lineArtCanvas.getContext("2d");
     if (!ctx || !lineArtCtx) return;
 
-    const img = new Image();
-    img.crossOrigin = "anonymous";
+    // 设置固定画布尺寸
+    canvas.width = CANVAS_WIDTH;
+    canvas.height = CANVAS_HEIGHT;
+    lineArtCanvas.width = CANVAS_WIDTH;
+    lineArtCanvas.height = CANVAS_HEIGHT;
 
-    img.onload = () => {
-      const width = 800;
-      const height = 600;
-      canvas.width = width;
-      canvas.height = height;
-      lineArtCanvas.width = width;
-      lineArtCanvas.height = height;
+    // 涂色层初始化为纯白背景
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-      ctx.fillStyle = "#FFFFFF";
-      ctx.fillRect(0, 0, width, height);
-
-      const lineArtImg = new Image();
-      lineArtImg.crossOrigin = "anonymous";
-      lineArtImg.onload = () => {
-        lineArtCtx.drawImage(lineArtImg, 0, 0, width, height);
-        if (canvasRef.current) {
-          const dataUrl = canvasRef.current.toDataURL();
-          setHistory([dataUrl]);
-          setHistoryIndex(0);
-        }
-      };
-      lineArtImg.src = page.lineArtUrl || page.illustrationUrl;
+    // 加载线稿图片并绘制到线稿层
+    const lineArtImg = new Image();
+    lineArtImg.crossOrigin = "anonymous";
+    lineArtImg.onload = () => {
+      // 清空线稿层并重绘（白底+黑线）
+      lineArtCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      lineArtCtx.drawImage(lineArtImg, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      // 保存初始状态到历史记录
+      if (canvasRef.current) {
+        const dataUrl = canvasRef.current.toDataURL();
+        setHistory([dataUrl]);
+        setHistoryIndex(0);
+      }
     };
-
-    img.src = page.illustrationUrl;
+    // 优先使用提取的线稿URL，若不存在则回退到原插画URL
+    lineArtImg.src = page.lineArtUrl || page.illustrationUrl;
   }, [page]);
 
   useEffect(() => {
     initCanvas();
   }, [initCanvas, currentPage]);
 
+  /**
+   * 保存当前涂色层状态到历史记录（用于撤销/重做）
+   * 最多保留50步历史
+   */
   const saveState = useCallback(() => {
     if (!canvasRef.current) return;
     const dataUrl = canvasRef.current.toDataURL();
@@ -99,6 +144,7 @@ export default function Coloring() {
     setHistoryIndex(prev => Math.min(prev + 1, 49));
   }, [historyIndex]);
 
+  /** 撤销：回到上一步状态 */
   const undo = () => {
     if (historyIndex <= 0 || !canvasRef.current) return;
     const newIndex = historyIndex - 1;
@@ -114,6 +160,7 @@ export default function Coloring() {
     img.src = history[newIndex];
   };
 
+  /** 重做：前进到下一步状态 */
   const redo = () => {
     if (historyIndex >= history.length - 1 || !canvasRef.current) return;
     const newIndex = historyIndex + 1;
@@ -129,6 +176,7 @@ export default function Coloring() {
     img.src = history[newIndex];
   };
 
+  /** 清空涂色层（恢复纯白） */
   const clearCanvas = () => {
     if (!canvasRef.current) return;
     const ctx = canvasRef.current.getContext("2d");
@@ -138,6 +186,10 @@ export default function Coloring() {
     saveState();
   };
 
+  /**
+   * 获取鼠标/触摸事件在Canvas上的精确坐标
+   * 考虑了Canvas的CSS缩放比例，将屏幕坐标转换为画布像素坐标
+   */
   const getCanvasCoordinates = (e: React.MouseEvent | React.TouchEvent) => {
     if (!canvasRef.current) return { x: 0, y: 0 };
     const rect = canvasRef.current.getBoundingClientRect();
@@ -156,6 +208,10 @@ export default function Coloring() {
     };
   };
 
+  /**
+   * 画笔绘制：在涂色层画圆点
+   * 橡皮擦模式使用 destination-out 擦除像素
+   */
   const draw = (e: React.MouseEvent | React.TouchEvent) => {
     if (!isDrawing || !canvasRef.current) return;
     const ctx = canvasRef.current.getContext("2d");
@@ -163,8 +219,14 @@ export default function Coloring() {
 
     const { x, y } = getCanvasCoordinates(e);
 
-    ctx.globalCompositeOperation = isEraser ? "destination-out" : "source-over";
-    ctx.fillStyle = isEraser ? "rgba(255,255,255,1)" : selectedColor;
+    if (isEraser) {
+      // 橡皮擦：使用白色圆形覆盖（而非destination-out），保证导出时背景为白色
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = "#FFFFFF";
+    } else {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = selectedColor;
+    }
     ctx.beginPath();
     ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
     ctx.fill();
@@ -182,6 +244,27 @@ export default function Coloring() {
     }
   };
 
+  /**
+   * Hex颜色转RGB对象
+   */
+  const hexToRgb = (hex: string) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+      r: parseInt(result[1], 16),
+      g: parseInt(result[2], 16),
+      b: parseInt(result[3], 16),
+    } : null;
+  };
+
+  /**
+   * 泛洪填充（Flood Fill）算法
+   *
+   * 原理：从点击位置开始，使用栈式迭代填充所有连通的同色区域，
+   *       以线稿层的深色像素为边界（不会越过黑色轮廓线）。
+   *
+   * 边界检测：检查线稿层像素，任一RGB通道 < LINE_PIXEL_THRESHOLD(200) 即视为不可越过的边界
+   * 颜色匹配：使用容差(COLOR_MATCH_TOLERANCE=15)判断两个颜色是否"相同"，抵抗抗锯齿噪点
+   */
   const floodFill = (e: React.MouseEvent) => {
     if (!canvasRef.current || !lineArtCanvasRef.current) return;
     const ctx = canvasRef.current.getContext("2d");
@@ -197,54 +280,84 @@ export default function Coloring() {
     const width = canvasRef.current.width;
     const height = canvasRef.current.height;
 
+    // 读取涂色层像素数据（将被修改）
     const imageData = ctx.getImageData(0, 0, width, height);
+    // 读取线稿层像素数据（只读，用于边界检测）
     const lineArtData = lineArtCtx.getImageData(0, 0, width, height);
     const data = imageData.data;
     const lineData = lineArtData.data;
 
-    const targetR = data[(y * width + x) * 4];
-    const targetG = data[(y * width + x) * 4 + 1];
-    const targetB = data[(y * width + x) * 4 + 2];
+    // 获取点击位置的目标颜色（将被替换的颜色）
+    const targetIdx = (y * width + x) * 4;
+    const targetR = data[targetIdx];
+    const targetG = data[targetIdx + 1];
+    const targetB = data[targetIdx + 2];
 
     const fillColor = hexToRgb(selectedColor);
     if (!fillColor) return;
 
-    if (targetR === fillColor.r && targetG === fillColor.g && targetB === fillColor.b) {
+    // 如果点击区域已经是目标颜色，不做任何操作
+    if (Math.abs(targetR - fillColor.r) < COLOR_MATCH_TOLERANCE &&
+        Math.abs(targetG - fillColor.g) < COLOR_MATCH_TOLERANCE &&
+        Math.abs(targetB - fillColor.b) < COLOR_MATCH_TOLERANCE) {
       return;
     }
 
-    const isLinePixel = (idx: number) => {
-      return lineData[idx] < 150 || lineData[idx + 1] < 150 || lineData[idx + 2] < 150;
+    /**
+     * 判断像素是否为线稿边界（黑色轮廓线）
+     * 检查线稿层：任一RGB通道低于阈值(200)即为线条
+     * 阈值较高(200)可以捕获SVG半透明描边和抗锯齿灰色像素，有效防止flood fill泄漏
+     */
+    const isLinePixel = (pixelIdx: number): boolean => {
+      return (
+        lineData[pixelIdx] < LINE_PIXEL_THRESHOLD ||
+        lineData[pixelIdx + 1] < LINE_PIXEL_THRESHOLD ||
+        lineData[pixelIdx + 2] < LINE_PIXEL_THRESHOLD
+      );
     };
 
-    const matchesTarget = (idx: number) => {
-      return Math.abs(data[idx] - targetR) < 10 &&
-             Math.abs(data[idx + 1] - targetG) < 10 &&
-             Math.abs(data[idx + 2] - targetB) < 10;
+    /**
+     * 判断像素颜色是否匹配填充目标色（带容差）
+     * 容差处理抗锯齿边缘的微小颜色差异
+     */
+    const matchesTarget = (pixelIdx: number): boolean => {
+      return (
+        Math.abs(data[pixelIdx] - targetR) <= COLOR_MATCH_TOLERANCE &&
+        Math.abs(data[pixelIdx + 1] - targetG) <= COLOR_MATCH_TOLERANCE &&
+        Math.abs(data[pixelIdx + 2] - targetB) <= COLOR_MATCH_TOLERANCE
+      );
     };
 
-    const stack: [number, number][] = [[x, y]];
-    const visited = new Set<string>();
+    // 栈式泛洪填充（4邻域：上下左右）
+    const stack: Array<[number, number]> = [[x, y]];
+    // 使用Uint8Array作为visited标记（比Set快得多，适合大画布）
+    const visited = new Uint8Array(width * height);
 
     while (stack.length > 0) {
       const [cx, cy] = stack.pop()!;
-      const key = `${cx},${cy}`;
 
+      // 越界检查
       if (cx < 0 || cx >= width || cy < 0 || cy >= height) continue;
-      if (visited.has(key)) continue;
+      const pixelKey = cy * width + cx;
+      // 已访问检查
+      if (visited[pixelKey]) continue;
 
-      const idx = (cy * width + cx) * 4;
+      const pixelIdx = pixelKey * 4;
 
-      if (isLinePixel(idx)) continue;
-      if (!matchesTarget(idx)) continue;
+      // 线稿边界检查：不越过轮廓线
+      if (isLinePixel(pixelIdx)) continue;
+      // 颜色匹配检查：只填充连通的同色区域
+      if (!matchesTarget(pixelIdx)) continue;
 
-      visited.add(key);
+      visited[pixelKey] = 1;
 
-      data[idx] = fillColor.r;
-      data[idx + 1] = fillColor.g;
-      data[idx + 2] = fillColor.b;
-      data[idx + 3] = 255;
+      // 写入填充颜色
+      data[pixelIdx] = fillColor.r;
+      data[pixelIdx + 1] = fillColor.g;
+      data[pixelIdx + 2] = fillColor.b;
+      data[pixelIdx + 3] = 255;
 
+      // 4邻域扩展
       stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
     }
 
@@ -252,24 +365,20 @@ export default function Coloring() {
     saveState();
   };
 
-  const hexToRgb = (hex: string) => {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result ? {
-      r: parseInt(result[1], 16),
-      g: parseInt(result[2], 16),
-      b: parseInt(result[3], 16),
-    } : null;
-  };
-
+  /**
+   * 保存作品到本地画廊
+   * 合并涂色层和线稿层导出为PNG
+   */
   const saveArtwork = () => {
     if (!canvasRef.current || !page) return;
 
     const compositeCanvas = document.createElement("canvas");
-    compositeCanvas.width = 800;
-    compositeCanvas.height = 600;
+    compositeCanvas.width = CANVAS_WIDTH;
+    compositeCanvas.height = CANVAS_HEIGHT;
     const compositeCtx = compositeCanvas.getContext("2d");
     if (!compositeCtx) return;
 
+    // 先画涂色层（白底+颜色），再画线稿层（黑色轮廓叠加）
     compositeCtx.drawImage(canvasRef.current, 0, 0);
     compositeCtx.drawImage(lineArtCanvasRef.current!, 0, 0);
 
@@ -287,12 +396,15 @@ export default function Coloring() {
     setTimeout(() => setSaveSuccess(false), 2000);
   };
 
+  /**
+   * 下载作品为PNG图片到本地
+   */
   const downloadArtwork = () => {
     if (!canvasRef.current) return;
 
     const compositeCanvas = document.createElement("canvas");
-    compositeCanvas.width = 800;
-    compositeCanvas.height = 600;
+    compositeCanvas.width = CANVAS_WIDTH;
+    compositeCanvas.height = CANVAS_HEIGHT;
     const compositeCtx = compositeCanvas.getContext("2d");
     if (!compositeCtx) return;
 
@@ -305,6 +417,9 @@ export default function Coloring() {
     link.click();
   };
 
+  /**
+   * 从作品库加载已保存的作品到涂色层
+   */
   const loadArtwork = (artwork: ColoringArtwork) => {
     if (!canvasRef.current) return;
     const img = new Image();
@@ -320,6 +435,7 @@ export default function Coloring() {
     setShowGallery(false);
   };
 
+  // 无绘本数据时显示空状态提示
   if (!storyBook) {
     return (
       <div className="min-h-screen bg-cream font-body flex items-center justify-center">
@@ -344,6 +460,7 @@ export default function Coloring() {
 
   return (
     <div className="min-h-screen bg-cream font-body flex flex-col items-center px-4 py-6">
+      {/* 顶部导航栏 */}
       <div className="w-full max-w-4xl mb-4">
         <div className="flex items-center justify-between">
           <button
@@ -358,8 +475,10 @@ export default function Coloring() {
         </div>
       </div>
 
+      {/* 画布区域 */}
       <div className="relative w-full max-w-4xl mb-4">
         <div className="book-shadow rounded-2xl overflow-hidden bg-white aspect-[4/3] relative">
+          {/* 底层：涂色层Canvas - 用户绘制的颜色 */}
           <canvas
             ref={canvasRef}
             className="absolute inset-0 w-full h-full cursor-crosshair"
@@ -371,11 +490,14 @@ export default function Coloring() {
             onTouchMove={draw}
             onTouchEnd={stopDrawing}
           />
+          {/* 顶层：线稿层Canvas - 固定黑色轮廓，使用multiply混合模式叠加
+              multiply模式：白色(255)完全透明，黑色(0)完全不显示底层，实现线稿覆盖效果 */}
           <canvas
             ref={lineArtCanvasRef}
             className="absolute inset-0 w-full h-full pointer-events-none"
             style={{ mixBlendMode: "multiply" }}
           />
+          {/* 原图对比叠加层（半透明显示在最上面） */}
           {showOriginal && page && (
             <img
               src={page.illustrationUrl}
@@ -384,6 +506,7 @@ export default function Coloring() {
             />
           )}
 
+          {/* 翻页按钮 */}
           {!isFirstPage && (
             <button
               onClick={() => setCurrentPage((prev) => prev - 1)}
@@ -405,14 +528,16 @@ export default function Coloring() {
 
         <div className="mt-2 text-center">
           <span className="text-warm-brown/50 font-body text-sm">
-            第 {currentPage + 1} 页 / 共 {totalPages} 页 · 点击填色，按住拖动涂色，Shift+点击区域填充
+            第 {currentPage + 1} 页 / 共 {totalPages} 页 · 按住拖动涂色，Shift+点击区域填充
           </span>
         </div>
       </div>
 
+      {/* 底部工具栏 */}
       <div className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur rounded-t-2xl shadow-[0_-4px_20px_rgba(0,0,0,0.08)] z-40">
         <div className="max-w-4xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between gap-4 flex-wrap">
+            {/* 撤销/重做/清空 */}
             <div className="flex items-center gap-2">
               <button
                 onClick={undo}
@@ -439,6 +564,7 @@ export default function Coloring() {
               </button>
             </div>
 
+            {/* 橡皮擦/显示原图 */}
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setIsEraser(!isEraser)}
@@ -464,6 +590,7 @@ export default function Coloring() {
               </button>
             </div>
 
+            {/* 画笔大小调节 */}
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setBrushSize(Math.max(4, brushSize - 4))}
@@ -495,6 +622,7 @@ export default function Coloring() {
               </button>
             </div>
 
+            {/* 颜色选择器 */}
             <div className="flex items-center gap-2">
               <div
                 className="w-8 h-8 rounded-full border-2 border-white shadow-md"
@@ -519,6 +647,7 @@ export default function Coloring() {
               </div>
             </div>
 
+            {/* 作品库/保存/下载 */}
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowGallery(!showGallery)}
@@ -550,6 +679,7 @@ export default function Coloring() {
         </div>
       </div>
 
+      {/* 作品库弹窗 */}
       {showGallery && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden animate-scale-in">
@@ -609,6 +739,7 @@ export default function Coloring() {
         </div>
       )}
 
+      {/* 保存成功提示 */}
       {saveSuccess && (
         <div className="fixed top-8 left-1/2 -translate-x-1/2 bg-green-500 text-white px-6 py-3 rounded-full shadow-lg font-display animate-bounce z-50">
           ✨ 作品保存成功！

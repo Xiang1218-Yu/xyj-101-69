@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { generateStory } from "@/utils/storyEngine";
 import { generateIllustration, getFallbackIllustration } from "@/utils/imageGenerator";
-import { extractLineArt, getFallbackLineArt } from "@/utils/lineArtExtractor";
+import { extractLineArt, getFallbackLineArt, isSvgDataUrl } from "@/utils/lineArtExtractor";
 import { useStore } from "@/store/useStore";
 import type { StoryBook, BookPage } from "@/store/useStore";
 import type { StoryPageTemplate } from "@/utils/storyEngine";
@@ -69,11 +69,17 @@ export default function Generating() {
 
           let lineArtUrl = "";
           if (coloringEnabled && page.pageType !== "back") {
-            try {
-              setStage(2);
-              lineArtUrl = await extractLineArt(illustrationUrl);
-            } catch {
+            setStage(2);
+            if (isSvgDataUrl(illustrationUrl)) {
+              // SVG fallback插画：直接使用对应的线稿SVG，保证元素100%一致
               lineArtUrl = getFallbackLineArt(page.pageType, i);
+            } else {
+              // AI生成的位图：使用边缘检测算法提取线稿
+              try {
+                lineArtUrl = await extractLineArt(illustrationUrl);
+              } catch {
+                lineArtUrl = getFallbackLineArt(page.pageType, i);
+              }
             }
           }
 
