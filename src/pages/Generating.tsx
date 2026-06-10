@@ -69,10 +69,13 @@ export default function Generating() {
 
           let lineArtUrl = "";
           if (coloringEnabled && page.pageType !== "back") {
+            setStage(2);
+            // 所有图片（AI位图 / SVG fallback）统一走边缘检测算法
+            // SVG加载到canvas后由浏览器渲染为位图，emoji和几何形状的边缘都会被Sobel算子自然检测
             try {
-              setStage(2);
               lineArtUrl = await extractLineArt(illustrationUrl);
             } catch {
+              // 极端情况失败时使用矢量线稿作为最终兜底
               lineArtUrl = getFallbackLineArt(page.pageType, i);
             }
           }
