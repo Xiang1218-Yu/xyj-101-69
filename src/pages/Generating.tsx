@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { generateStory } from "@/utils/storyEngine";
 import { generateIllustration, getFallbackIllustration } from "@/utils/imageGenerator";
-import { extractLineArt, getFallbackLineArt, isSvgDataUrl } from "@/utils/lineArtExtractor";
+import { extractLineArt, getFallbackLineArt } from "@/utils/lineArtExtractor";
 import { useStore } from "@/store/useStore";
 import type { StoryBook, BookPage } from "@/store/useStore";
 import type { StoryPageTemplate } from "@/utils/storyEngine";
@@ -70,16 +70,13 @@ export default function Generating() {
           let lineArtUrl = "";
           if (coloringEnabled && page.pageType !== "back") {
             setStage(2);
-            if (isSvgDataUrl(illustrationUrl)) {
-              // SVG fallback插画：直接使用对应的线稿SVG，保证元素100%一致
+            // 所有图片（AI位图 / SVG fallback）统一走边缘检测算法
+            // SVG加载到canvas后由浏览器渲染为位图，emoji和几何形状的边缘都会被Sobel算子自然检测
+            try {
+              lineArtUrl = await extractLineArt(illustrationUrl);
+            } catch {
+              // 极端情况失败时使用矢量线稿作为最终兜底
               lineArtUrl = getFallbackLineArt(page.pageType, i);
-            } else {
-              // AI生成的位图：使用边缘检测算法提取线稿
-              try {
-                lineArtUrl = await extractLineArt(illustrationUrl);
-              } catch {
-                lineArtUrl = getFallbackLineArt(page.pageType, i);
-              }
             }
           }
 
