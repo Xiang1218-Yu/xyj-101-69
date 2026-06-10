@@ -26,6 +26,19 @@ export async function generateIllustration(prompt: string): Promise<string> {
   }
 }
 
+/**
+ * 确定性伪随机数生成器
+ * 使用与 lineArtExtractor.ts 相同的种子算法
+ * 确保备用插图和备用线稿使用相同的元素位置
+ */
+function seededRandom(seed: number): () => number {
+  let state = seed
+  return () => {
+    state = (state * 1664525 + 1013904223) & 0xffffffff
+    return (state >>> 0) / 0xffffffff
+  }
+}
+
 export function getFallbackIllustration(pageType: string, index: number): string {
   const width = 800
   const height = 600
@@ -41,7 +54,9 @@ export function getFallbackIllustration(pageType: string, index: number): string
 
   const palette = palettes[index % palettes.length]
 
-  const getRandomInRange = (min: number, max: number) => Math.random() * (max - min) + min
+  /* 使用确定性随机数，确保与 getFallbackLineArt 位置一致 */
+  const rng = seededRandom(index * 12345 + 67890)
+  const getRandomInRange = (min: number, max: number) => rng() * (max - min) + min
 
   let contentSvg = ''
 
@@ -58,19 +73,19 @@ export function getFallbackIllustration(pageType: string, index: number): string
     <path d="M 0 ${height * 0.75} Q ${width * 0.3} ${height * 0.7}, ${width * 0.6} ${height * 0.78} T ${width} ${height * 0.75} L ${width} ${height} L 0 ${height} Z" fill="rgba(126, 200, 164, 0.5)" />
   `
 
-  const decorativeElements = palette.elements.map((emoji, i) => {
+  const decorativeElements = palette.elements.map((emoji) => {
     const x = getRandomInRange(80, width - 80)
     const y = getRandomInRange(100, height * 0.55)
     const size = getRandomInRange(40, 65)
     return `<text x="${x}" y="${y}" font-size="${size}" text-anchor="middle" opacity="0.9">${emoji}</text>`
   }).join('')
 
-  const stars = Array.from({ length: 20 }, (_, i) => {
-    const x = Math.random() * width
-    const y = Math.random() * height * 0.4
+  /* 星星 — 使用确定性随机位置，与 getFallbackLineArt 一致 */
+  const stars = Array.from({ length: 20 }, () => {
+    const x = rng() * width
+    const y = rng() * height * 0.4
     const r = getRandomInRange(2, 4)
-    const delay = Math.random() * 3
-    return `<circle cx="${x}" cy="${y}" r="${r}" fill="rgba(255, 215, 0, 0.6)" opacity="${0.5 + Math.random() * 0.5}" />`
+    return `<circle cx="${x}" cy="${y}" r="${r}" fill="rgba(255, 215, 0, 0.6)" opacity="${0.5 + rng() * 0.5}" />`
   }).join('')
 
   const flowers = Array.from({ length: 8 }, (_, i) => {
