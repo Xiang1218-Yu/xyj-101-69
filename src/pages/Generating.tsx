@@ -69,11 +69,19 @@ export default function Generating() {
 
           let lineArtUrl = "";
           if (coloringEnabled && page.pageType !== "back") {
+            // 涂色页线稿必须基于"原插画"生成，保证元素与原页面一致：
+            // 1) 优先走 Canvas + Sobel 边缘检测得到黑白线稿
+            // 2) 失败（如跨域污染）则降级为基于原插画的 SVG 滤镜方案
+            // 3) 再失败则直接使用原插画 URL 作为兜底，避免出现无关元素
+            setStage(2);
             try {
-              setStage(2);
               lineArtUrl = await extractLineArt(illustrationUrl);
             } catch {
-              lineArtUrl = getFallbackLineArt(page.pageType, i);
+              try {
+                lineArtUrl = await getFallbackLineArt(illustrationUrl);
+              } catch {
+                lineArtUrl = illustrationUrl;
+              }
             }
           }
 
